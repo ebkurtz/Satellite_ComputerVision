@@ -18,7 +18,8 @@ from rasterio.vrt import WarpedVRT
 from rioxarray.merge import merge_arrays
 import rioxarray
 from rioxarray.merge import merge_arrays
-from pyproj import CRS
+from pyproj import CRS, Transformer
+import geopandas as gpd
 
 import planetary_computer
 from dask_gateway import GatewayCluster
@@ -384,17 +385,23 @@ def get_s2_stac(dates, aoi, cloud_thresh = 10, bands = ["B02", "B03", "B04", "B0
         harmonized = None   
     return harmonized
 
-def get_s1_stac(dates, aoi, epsg  = None, bands = ["vv", "vh"]):
+def get_s1_stac(
+        dates,
+        aoi,
+        epsg  = None,
+        bands = ["vv", "vh"],
+        bbox_size=None):
     """from a pystac client return a stac of s2 imagery
 
     Parameters 
     ----
-    client: pystac_client.Client()
-        pystac catalog from which to retrieve assets
     dates: str
         start/end dates
-    bbox: tpl
-        [xmin, ymin, xmax, ymax]
+    aoi: shapely.geometry.point
+    epsg: CRS of dataset (Optional)
+    bands: Name of the bands to return (Optional)
+    bbox_size: Clip the returned data to a specific buffer around the aoi point
+
     
     Return
     ---
@@ -418,78 +425,35 @@ def get_s1_stac(dates, aoi, epsg  = None, bands = ["vv", "vh"]):
     s1items = search.item_collection()
     if not epsg:
         s1 = s1items[0]
-        epsg = s1.properties['proj:epsg']
-    s1Stac = stackstac.stack(
-        s1items,
-        epsg = epsg,
-        assets=bands,
-        resolution=10,
-        gdal_env=stackstac.DEFAULT_GDAL_ENV.updated(
-            always=dict(GDAL_HTTP_MAX_RETRY=5, GDAL_HTTP_RETRY_DELAY=1)
-            )
-    )
 
-    # # get spatial reference info
-    # s1crs = s1Stac.attrs['crs']
-    # s1transform = s1Stac.attrs['transform']
-    # s1res = s1transform[0]
-
-    # s1projected = s1Stac.rio.set_crs(s1crs)
-    # clipped = s1projected.rio.clip(geometries = [aoi], crs = 4326)
-    return s1Stac
-
-def get_s1_stac(dates, aoi, epsg  = None, bands = ["vv", "vh"]):
-    """from a pystac client return a stac of s2 imagery
-
-    Parameters 
-    ----
-    client: pystac_client.Client()
-        pystac catalog from which to retrieve assets
-    dates: str
-        start/end dates
-    bbox: tpl
-        [xmin, ymin, xmax, ymax]
+        epsg = int(
+            s1
+            .properties['proj:code']
+            .replace('EPSG:', '')
+        )
     
-    Return
-    ---
-    stackstac.stac()
-    """
-    # connect to the planetary computer catalog
-    catalog = pystac_client.Client.open(
-        "https://planetarycomputer.microsoft.com/api/stac/v1",
-        modifier = planetary_computer.sign_inplace)
+    if bbox_size is not None:
+        bounds = (
+            gpd.GeoSeries([aoi], crs='4326')
+            .to_crs(epsg)
+            .buffer(bbox_size, cap_style='square')
+            .total_bounds
+            .tolist()
+        )
+    else:
+        bounds=None
 
-    search = catalog.search(
-        datetime = dates,
-        intersects = aoi,
-        collections=["sentinel-1-rtc"],
-        query={"sar:polarizations": {"eq": ['VV', 'VH']},
-                'sar:instrument_mode': {"eq": 'IW'},
-                'sat:orbit_state': {"eq": 'ascending'}
-                }
-    )
-
-    s1items = search.item_collection()
-    if not epsg:
-        s1 = s1items[0]
-        epsg = s1.properties['proj:epsg']
     s1Stac = stackstac.stack(
         s1items,
         epsg = epsg,
         assets=bands,
         resolution=10,
+        bounds=bounds,
         gdal_env=stackstac.DEFAULT_GDAL_ENV.updated(
             always=dict(GDAL_HTTP_MAX_RETRY=5, GDAL_HTTP_RETRY_DELAY=1)
             )
     )
 
-    # # get spatial reference info
-    # s1crs = s1Stac.attrs['crs']
-    # s1transform = s1Stac.attrs['transform']
-    # s1res = s1transform[0]
-
-    # s1projected = s1Stac.rio.set_crs(s1crs)
-    # clipped = s1projected.rio.clip(geometries = [aoi], crs = 4326)
     return s1Stac
 
 def get_ssurgo_stac(aoi, epsg)-> np.ndarray:
